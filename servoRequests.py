@@ -70,4 +70,4 @@ def stopSwipe(request):
     config.updateSharedDict(updStmt)
     arduinoSend.requestRest(servoName)
 
-# test git
+# test git 2
