@@ -69,3 +69,5 @@ def stopSwipe(request):
     updStmt = ("servoCurrentDict", servoName, {'swiping': False})
     config.updateSharedDict(updStmt)
     arduinoSend.requestRest(servoName)
+
+# test git
