@@ -1,7 +1,8 @@
 
 import config
 import arduinoSend
-import marvinglobal.marvinglobal as mg
+from marvinglobal import marvinglobal as mg
+from marvinglobal import servoClasses
 
 #    def assign(self, requestQueue, servoName, initialPosition):
 #        requestQueue.put({'cmd': 'assign', 'servoName': servoName, 'position': initialPosition})
@@ -38,21 +39,21 @@ def allServoRest(request):
 def setAutoDetach(request):
     arduinoSend.setAutoDetach(request['servoName'], request['duration'])
 
+# random moves is a separate process
+#def startRandomMoves(request):
+#    config.log(f"tbd: startRandomMoves requested")
 
-def startRandomMoves(request):
-    config.log(f"tbd: startRandomMoves requested")
-
-def stopRandomMoves(request):
-    config.log(f"tbd: stopRandomMoves requested")
+#def stopRandomMoves(request):
+#    config.log(f"tbd: stopRandomMoves requested")
 
 def startSwipe(request):
     config.log(f"startSwipe requested")
     servoName = request['servoName']
-    servoStatic: mg.ServoStatic = config.md.servoStaticDict.get(servoName)
-    servoDerived: mg.ServoDerived = config.md.servoDerivedDict.get(servoName)
+    servoStatic: servoClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
 
     # request servoCurrent update with new swiping state
-    updStmt = ("servoCurrentDict", servoName, {'swiping': True})
+    updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': True})
     config.updateSharedDict(updStmt)
 
     minPos = servoStatic.minPos
@@ -66,7 +67,7 @@ def startSwipe(request):
 def stopSwipe(request):
     config.log(f"stopSwipe requested")
     servoName = request['servoName']
-    updStmt = ("servoCurrentDict", servoName, {'swiping': False})
+    updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': False})
     config.updateSharedDict(updStmt)
     arduinoSend.requestRest(servoName)
 

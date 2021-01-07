@@ -1,41 +1,47 @@
 
 import os, sys
 import time
-#from multiprocessing.managers import SyncManager
 import serial   # pip install pyserial
 import threading
+import simplejson as json
+import queue
 
-import marvinglobal.marvinglobal as mg
-#from shared_memory_dict import SharedMemoryDict
+from marvinglobal import marvinglobal as mg
+from marvinglobal import marvinShares
+from marvinglobal import servoClasses
+
 import config
 
 import arduinoSend
 import arduinoReceive
 import servoRequests
 
-def openSerial(ad):
+
+def openSerial(arduinoIndex):
     #{'arduinoIndex', 'arduinoName', 'comPort', 'connected'}
 
-    if ad['comPort'] == "unassigned":
+    arduinoData = config.arduinoDictLocal[arduinoIndex]
+    if arduinoData['comPort'] == "unassigned":
         return True
     conn = None
     try:
-        conn = serial.Serial(ad['comPort'])
+        conn = serial.Serial(arduinoData['comPort'])
         # try to reset the arduino
-        #conn.setDTR(False)
-        #time.sleep(0.2)
-        #conn.setDTR(True)
+        conn.setDTR(False)
+        time.sleep(0.2)
+        conn.setDTR(True)
+        time.sleep(0.2)
         conn.baudrate = 115200
         conn.writeTimeout = 0
         #config.log(f"serial connection with arduino {a['arduinoIndex']}, {a['arduinoName']} on {a['comPort']} initialized")
 
-        config.log(f"serial connection with arduino {ad['arduinoName']} set")
-        config.arduinoConn[ad['arduinoIndex']] = conn
+        config.log(f"serial connection with arduino {arduinoData['arduinoName']} set")
+        config.arduinoConn[arduinoIndex] = conn
 
         return True
 
     except Exception as eSerial:
-        config.log(f"exception on serial connect with arduino: {ad['arduinoName']}, comPort: {ad['comPort']}, {eSerial}, going down")
+        config.log(f"exception on serial connect with arduino: {arduinoData['arduinoName']}, comPort: {arduinoData['comPort']}, {eSerial}, going down")
         if conn is not None:
             try:
                 conn.close()
@@ -56,115 +62,300 @@ def assignServos(arduinoIndex):
     config.log(f"send servo definitions to arduino {arduinoIndex} and set current position to last persisted position")
 
     # send servo definition data to arduino
-    for servoName, servoStatic in config.md.servoStaticDict.items():
+    for servoName, servoStatic in config.servoStaticDictLocal.items():
 
-        if servoStatic.enabled and servoStatic.arduino == arduinoIndex:
+        if servoStatic.enabled and servoStatic.arduinoIndex == arduinoIndex:
 
             #config.log(f"servo assign {servoName}")
-            arduinoSend.servoAssign(servoName, config.md.servoCurrentDict.get(servoName).position)
-            #time.sleep(0.1)
+            arduinoSend.servoAssign(servoName, config.servoCurrentDictLocal.get(servoName).position)
+            time.sleep(0.2)
+
+def saveServoPosition(servoName, position, maxDelay=10):
+    '''
+    save current servo position to json file if last safe time differs
+    more than maxDelay seconds
+    '''
+    config.persistedServoPositionsLocal[servoName] = position
+    if time.time() - config.lastPositionSaveTime > maxDelay:
+        persistServoPositions()
+
+
+def persistServoPositions():
+
+    config.lastPositionSaveTime = time.time()
+    with open(mg.PERSISTED_SERVO_POSITIONS_FILE, 'w') as outfile:
+        json.dump(config.persistedServoPositionsLocal, outfile, indent=2)
 
 
 def initServoControl():
 
-    # reset arduino connected state in shared data
-    for a, ad in config.md.arduinoDict.items():
-        updStmt = ("arduinoDict", a, {'connected':False})
+    def loadServoTypes():
+        # servo types
+        config.log(f"open servo types file {mg.SERVO_TYPE_DEFINITIONS_FILE}")
+        try:
+            with open(mg.SERVO_TYPE_DEFINITIONS_FILE, 'r') as infile:
+                servoTypeDefinitions = json.load(infile)
+            with open(mg.SERVO_TYPE_DEFINITIONS_FILE + ".bak", 'w') as outfile:
+                json.dump(servoTypeDefinitions, outfile, indent=2)
+
+        except Exception as e:
+            config.log(f"missing {mg.SERVO_TYPE_DEFINITIONS_FILE} file, try using the backup file")
+            os._exit(3)
+
+        for servoTypeName, servoTypeData in servoTypeDefinitions.items():
+            servoType = servoClasses.ServoType(servoTypeData)   # inst of servoTypeData class
+            config.servoTypeDictLocal.update({servoTypeName: servoType})
+
+            # add servoTypes to shared data
+            updStmt = (mg.SharedDataItem.SERVO_TYPE, servoTypeName, dict(servoType.__dict__))
+            config.updateSharedDict(updStmt)
+
+        config.log(f"servoTypeDict loaded")
+
+
+    def loadServoStaticDefinitions():
+
+        try:
+            with open(mg.SERVO_STATIC_DEFINITIONS_FILE, 'r') as infile:
+                servoStaticDefinitions = json.load(infile)
+            # if successfully read create a backup just in case
+            with open(mg.SERVO_STATIC_DEFINITIONS_FILE + ".bak", 'w') as outfile:
+                json.dump(servoStaticDefinitions, outfile, indent=2)
+
+        except Exception as e:
+            config.log(f"missing {mg.SERVO_STATIC_DEFINITIONS_FILE} file, try using the backup file")
+            os._exit(2)
+
+        for servoName in servoStaticDefinitions:
+            servoStatic = servoClasses.ServoStatic(servoStaticDefinitions[servoName])
+            servoType = config.servoTypeDictLocal[servoStatic.servoType]
+
+            # data cleansing
+            # BE AWARE: inversion is handled in the arduino only, maxPos > minPos is a MUST!
+            # check for valid min/max position values in servo type definition
+            if servoType.typeMaxPos < servoType.typeMinPos:
+                config.log(f"wrong servo type values, typeMaxPos < typeMinPos, servo disabled")
+                servoStatic.enabled = False
+
+            # check for valid min/max degree values in servo definition
+            if servoStatic.maxDeg < servoStatic.minDeg:
+                config.log(f"wrong servo min/max values, maxDeg < minDeg for {servoName}, servo disabled")
+                servoStatic.enabled = False
+
+            # check for servo values in range of servo type definition
+            if servoStatic.minPos < servoType.typeMinPos:
+                config.log(f"servo min pos lower than servo type min pos for {servoName}, servo min pos adjusted")
+                servoStatic.minPos = servoType.typeMinPos
+
+            if servoStatic.maxPos > servoType.typeMaxPos:
+                config.log(f"servo max pos higher than servo type max pos for {servoName}, servo max pos adjusted")
+                servoStatic.maxPos = servoType.typeMaxPos
+
+            # add object to the servoStaticDict
+            config.servoStaticDictLocal.update({servoName: servoStatic})
+
+            # add servoTypes to shared data
+            updStmt = (mg.SharedDataItem.SERVO_STATIC, servoName, dict(servoStatic.__dict__))
+            config.updateSharedDict(updStmt)
+
+
+    def loadServoPositions():
+
+        # global persistedServoPositions, servoCurrentDict
+
+        config.log("load last known servo positions")
+        if os.path.isfile(mg.PERSISTED_SERVO_POSITIONS_FILE):
+            with open(mg.PERSISTED_SERVO_POSITIONS_FILE, 'r') as infile:
+                config.persistedServoPositionsLocal = json.load(infile)
+                if len(config.persistedServoPositionsLocal) != len(config.servoStaticDictLocal):
+                    config.log(f"mismatch of servoDict and persistedServoPositions")
+                    createPersistedDefaultServoPositions()
+        else:
+            createPersistedDefaultServoPositions()
+
+        # check for valid persisted position
+        for servoName in config.servoStaticDictLocal:
+
+            servoStatic:servoClasses.ServoStatic = config.servoStaticDictLocal[servoName]
+
+            # try to assign the persisted last known servo position
+            try:
+                p = config.persistedServoPositionsLocal[servoName]
+            except KeyError:
+                # in case we do not have a last known servo position use 90 as default
+                p = 90
+
+            # set current position to min or max if outside range
+            if p < servoStatic.minPos:
+                p = servoStatic.minPos
+            if p > servoStatic.maxPos:
+                p = servoStatic.maxPos
+
+            # create ServoCurrent object
+            servoCurrent = servoClasses.ServoCurrent()
+
+            servoCurrent.position = p
+
+            # set degrees from pos
+            # servoCurrent.degrees = mg.evalDegFromPos(servoName, p)
+
+            # add object to servoCurrentDict with key servoName
+            config.servoCurrentDictLocal.update({servoName: servoCurrent})
+
+            # add servoCurrent to shared data
+            updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, dict(servoCurrent.__dict__))
+            config.updateSharedDict(updStmt)
+
+        config.log("servoPositions loaded")
+
+    loadServoTypes()
+    loadServoStaticDefinitions()
+
+    config.log(f"create servoDerivedDict")
+    for servoName, servoStatic in config.servoStaticDictLocal.items():
+        servoType = config.servoTypeDictLocal[servoStatic.servoType]
+        servoDerived = servoClasses.ServoDerived(servoStatic, servoType)
+        config.servoDerivedDictLocal.update({servoName: servoDerived})
+
+
+    loadServoPositions()
+    saveServoStaticDict()
+
+    # create a dict to find servo name from arduino and pin (for messages from arduino)
+    for servoName, servoStatic in config.servoStaticDictLocal.items():
+        config.servoNameByArduinoAndPin.update({config.servoDerivedDictLocal[servoName].servoUniqueId: servoName})
+
+    # assign servos
+    for servoName, servoStatic in config.servoStaticDictLocal.items():
+        servoDerived:servoClasses.ServoDerived = config.servoDerivedDictLocal[servoName]
+        position = mg.evalPosFromDeg(servoStatic, servoDerived, servoStatic.restDeg)
+        arduinoSend.servoAssign(servoName, position)
+        time.sleep(0.2)
+
+
+def saveServoStaticDict():
+    '''
+    servoStaticDict is a dict of cServoStatic objects by servoName
+    to store it in json revert the objects back to dictionaries
+    :return:
+    '''
+    servoStaticDefinitions = {}
+    for servoName, servoObject in config.servoStaticDictLocal.items():
+        servoStaticDefinitions.update({servoName: servoObject.__dict__})
+
+    with open(mg.SERVO_STATIC_DEFINITIONS_FILE, 'w') as outfile:
+        json.dump(servoStaticDefinitions, outfile, indent=2)
+
+
+def createPersistedDefaultServoPositions():
+    '''
+    initialize default servo positions in case of missing or differing json file
+    :return:
+    '''
+
+    config.persistedServoPositionsLocal = {}
+    for servoName in config.servoStaticDictLocal:
+        config.persistedServoPositionsLocal.update({servoName: 90})
+    persistServoPositions()
+
+
+def connectWithArduinos():
+
+    # add items to the local arduino dict
+    # in windows make sure with device manager, port settings, advanced
+    # to assign the device to the correct COM port
+    config.arduinoDictLocal.update(
+        {0: {'arduinoName': 'left, lower arduino', 'comPort': 'COM7', 'connected': False}})
+    config.arduinoDictLocal.update(
+        {1: {'arduinoName': 'right, upper arduino', 'comPort': 'COM6', 'connected': False}})
+
+    # update the shared copy to be available for other interested processes
+    for arduinoIndex, arduinoDict in config.arduinoDictLocal.items():
+        updStmt = (mg.SharedDataItem.ARDUINO, arduinoIndex, arduinoDict)
         config.updateSharedDict(updStmt)
 
-
-    #ik.init()
     # try to open comm ports
-    for a, ad in config.md.arduinoDict.items():
-        if not openSerial(ad):
-            config.log(f"could not open serial port {a['comPort']}, going down")
+    for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
+        if not openSerial(arduinoIndex):
+            config.log(f"could not open serial port {arduinoIndex['comPort']}, going down")
             os._exit(1)
 
     # start serial port receiving threads
-    for a,ad in config.md.arduinoDict.items():
+    for arduinoIndex,arduinoData in config.arduinoDictLocal.items():
 
-        serialReadThread = threading.Thread(target=arduinoReceive.readMessages, args={ad['arduinoIndex']})
-        serialReadThread.name = f"arduinoRead_{ad['arduinoIndex']}"
+        serialReadThread = threading.Thread(target=arduinoReceive.readMessages, args={arduinoIndex})
+        serialReadThread.name = f"arduinoRead_{arduinoIndex}"
         serialReadThread.start()
 
     # verify connection by requesting a first response from Arduino
-    time.sleep(0.2)
-    for a, ad in config.md.arduinoDict.items():
-        arduinoSend.requestArduinoReady(ad['arduinoIndex'])
+    time.sleep(0.8)
+    for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
+        arduinoSend.requestArduinoReady(arduinoIndex)
 
     # wait for response from arduinos
     for i in range(100):
-        if config.md.arduinoDict.get(0)['connected'] and config.md.arduinoDict.get(1)['connected']:
+        if config.arduinoDictLocal.get(0)['connected'] and config.arduinoDictLocal.get(1)['connected']:
             break
-        time.sleep(0.05)
+        time.sleep(0.1)
 
     # check for successful connection with both arduinos
-    for a, ad in config.md.arduinoDict.items():
-        if not ad['connected']:
-            config.log(f"could not receive serial response from arduino {ad['arduinoName']}, {ad['comPort']}")
-            conn = config.arduinoConn[ad['arduinoIndex']]
-            if conn is not None:
-                try:
-                    conn.close()
-                except Exception as e2:
-                    config.log(f"conn.close failed, {e2}")
-            sys.exit(1)
+    for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
+        if not arduinoData['connected']:
+            config.log(f"could not receive serial response from arduino {arduinoData['arduinoName']}, {arduinoData['comPort']}")
+            os._exit(1)
 
-    for a, ad in config.md.arduinoDict.items():
-        assignServos(ad['arduinoIndex'])
-
-    # set verbose mode for servos to report more details
-    arduinoSend.setVerbose('head.rothead', True)
-
-    config.log(f"skeletonControl ready")
-    config.log(f"---------------")
 
     # allow arduinos to report their status
-    time.sleep(0.5)
+    time.sleep(2)
 
 
 if __name__ == "__main__":
 
-    config.startLogging()
+    #config.startLogging()
 
-    # connect with shared data
-    config.md = mg.MarvinGlobal()
-    if not config.md.connect():
+    config.marvinShares = marvinShares.MarvinShares()
+    if not config.marvinShares.sharedDataConnect(config.processName):
+        config.log(f"could not connect with marvinData")
         os._exit(1)
 
 
     # add own process to shared process list
-    config.md.updateProcessDict(config.processName)
+    config.marvinShares.updateProcessDict(config.processName)
 
-    # create a dict to find servo name from arduino and pin (for messages from arduino)
-    for servoName, servoStatic in config.md.servoStaticDict.items():
-        config.servoNameByArduinoAndPin.update({config.md.servoDerivedDict.get(servoName).servoUniqueId: servoName})
+    connectWithArduinos()
 
-    # connect with arduinos
     initServoControl()
 
-    # request all servos to rest position
-    config.log(f"request all servos rest")
-    config.md.servoRequestQueue.put({'cmd': 'allServoRest'})
+    for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
+        config.log(f"assign servos to arduino {arduinoIndex}, {arduinoData['arduinoName']=}, {arduinoData['comPort']=}")
+        assignServos(arduinoIndex)
 
+    # set verbose mode for servos to report more details
+    arduinoSend.setVerbose('rightHand.thumb', True)
+
+    # request all servos to rest position
+    arduinoSend.requestAllServosRest()
+
+    config.log(f"skeletonControl ready, waiting for skeleton requests")
+    config.log(f"---------------")
+    request = {}
     # wait for move requests or timeout
     while True:
-        if not config.md.updateProcessDict(config.processName):
-            # connection with shared data lost
-            config.md = None
-            while config.md is None:
-                config.md = mg.MarvinGlobal()
-                if not config.md.connect():
-                    time.sleep(1)
-            time.sleep(0.5)
 
         try:
-            request = config.md.servoRequestQueue.get(timeout=2)
-        except Exception as e:
-            # in case of empty queue update processDict only
+            config.marvinShares.updateProcessDict(config.processName)
+            request = config.marvinShares.servoRequestQueue.get(block=True, timeout=1)
+        except queue.Empty: # in case of empty queue update processDict only
             continue
+        except TimeoutError: # in case of timeout update processDict only
+            continue
+        except Exception as e:
+            config.log(f"exception in waiting for skeleton gui update requests, {e=}, going down")
+            os._exit(1)
 
-        config.log(f"servoRequestQueue, request received: {request}")
+        if 'servoName' in request.keys():
+            if request['servoName'] != 'head.jaw':
+                config.log(f"servoRequestQueue, request received: {request}")
 
         # try to call the requested servo method
         try:

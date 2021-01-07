@@ -1,19 +1,28 @@
 
+import os
 import time, datetime
 import logging
-import marvinglobal.marvinglobal as mg
+
+from marvinglobal import marvinShares
 
 numArduinos = 2
 arduinoConn = [None] * numArduinos
 
 processName = 'skeletonControl'
-md = None   # shared data
+marvinShares = None   # shared data
 
-arduinoDict = None
+# skeleton control updates its sharedDict's in marvinData
+# the dicts owned by the skeleton control itself get updated and queried locally
+arduinoDictLocal = {}            # local version of arduinoDict
+servoTypeDictLocal = {}
+servoStaticDictLocal = {}
+servoDerivedDictLocal = {}
+servoCurrentDictLocal = {}
+persistedServoPositionsLocal = {}
 
-servoNameByArduinoAndPin = {}   # a list to access servos by Arduino and Id
+servoNameByArduinoAndPin = {}   # a dictionary to access servos by Arduino and Id
 
-simulateServoMoves = False
+lastPositionSaveTime:float = time.time()
 
 
 def startLogging():
@@ -33,14 +42,7 @@ def log(msg, publish=True):
 
 def updateSharedDict(updStmt):
 
-    global md
-    if not md.updateSharedDict(updStmt):
+    if not marvinShares.updateSharedData(updStmt):
 
-        # connection to marvinData lost, try to reconnect
-        md = None
-        while md is None:
-            md = mg.MarvinGlobal()
-            if not md.connect():
-                time.sleep(1)
-            else:
-                break
+        log(f"connection with shared data lost, going down")# connection to marvinData lost, try to reconnect
+        os._exit(1)

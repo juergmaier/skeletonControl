@@ -4,7 +4,8 @@ import sys
 import time
 
 import config
-import marvinglobal.marvinglobal as mg
+from marvinglobal import marvinglobal as mg
+from marvinglobal import servoClasses
 
 import arduinoSend
 import skeletonControl
@@ -13,32 +14,37 @@ import skeletonControl
 #####################################
 # readMessages runs in its own THREAD
 #####################################
-def readMessages(arduino):
+def readMessages(arduinoIndex):
 
-    config.log(f"arduinoReceive, readMessages started for arduino: {arduino}")
+    config.log(f"arduinoReceive, start readMessages for arduino: {arduinoIndex}")
 
     while True:
-        if config.arduinoConn[arduino] is None:
-            time.sleep(1)
+        if config.arduinoConn[arduinoIndex] is None:
+            time.sleep(0.1)
             continue
 
-        conn = config.arduinoConn[arduino]
-        while conn.is_open:
+        conn = config.arduinoConn[arduinoIndex]
 
+        while conn.is_open:
+            bytesAvailable = 0
             try:
                 bytesAvailable = conn.in_waiting
             except Exception as e:
-                config.log(f"exception in arduino: {arduino} in in_waiting {e}, shutting down ...")
-                sys.exit(1)
-            #config.log("waiting for arduino message")
-            if bytesAvailable > 0:
+                config.log(f"exception in arduino: {arduinoIndex} in in_waiting {e}, shutting down ...")
+                os._exit(1)
+
+            #config.log(f"waiting for arduino message {arduino}, {bytesAvailable=}")
+            if bytesAvailable == 0:
+                time.sleep(0.1)
+                continue
+            else:
 
                 recvB = conn.readline()
 
-                #config.log(f"from arduino: {recvB}")
+                #config.log(f"from arduino {arduino}: {recvB}")
 
                 # check for existing shared data connection
-                if config.md is None:
+                if config.marvinShares is None:
                     continue
 
                 # special case status messages, as these can be very frequently
@@ -58,15 +64,15 @@ def readMessages(arduino):
                     servoVerbose = s3 & 0x10 > 0
 
 
-                    servoUniqueId = (arduino * 100) + pin
+                    servoUniqueId = (arduinoIndex * 100) + pin
                     servoName = config.servoNameByArduinoAndPin[servoUniqueId]
 
                     if servoVerbose:
-                        config.log(f"servo update {servoName}, {s1:02X},{s2:02X},{s3:02X}, arduino: {arduino}, pin: {pin:2}, pos {position:3}, assigned: {assigned}, moving {moving}, attached {attached}, autoDetach: {autoDetach}, verbose: {servoVerbose}", publish=False)
+                        config.log(f"servo update {servoName}, {s1:02X},{s2:02X},{s3:02X}, arduino: {arduinoIndex}, pin: {pin:2}, pos {position:3}, assigned: {assigned}, moving {moving}, attached {attached}, autoDetach: {autoDetach}, verbose: {servoVerbose}", publish=False)
 
-                    prevCurrentDict = config.md.servoCurrentDict.get(servoName)
-                    servoStatic = config.md.servoStaticDict.get(servoName)
-                    servoDerived: mg.ServoDerived = config.md.servoDerivedDict.get(servoName)
+                    prevCurrentDict = config.servoCurrentDictLocal.get(servoName)
+                    servoStatic = config.servoStaticDictLocal.get(servoName)
+                    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
                     degrees = mg.evalDegFromPos(servoStatic, servoDerived, position)
 
                     newValues = {'assigned': assigned,
@@ -80,16 +86,18 @@ def readMessages(arduino):
                                  'timeOfLastMoveRequest': prevCurrentDict.timeOfLastMoveRequest}
 
                     # update the shared dict
-                    if config.md is not None:
-                        updStmt = ("servoCurrentDict", servoName, newValues)
-                        config.updateSharedDict(updStmt)
+                    updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, newValues)
+                    config.updateSharedDict(updStmt)
 
-                    if position != prevCurrentDict.position:
-                        pass #ik.updateDhChain()
+                    # when move has ended persist the position
+                    if not newValues['moving']:
+                        skeletonControl.saveServoPosition(servoName, newValues['position'])
 
-                    # update skeleton gui if running
-                    if config.md.isProcessRunning('skeletonGui'):
-                        config.md.guiUpdateQueue.put({'type':'updateServo','servoName': servoName})
+                    # update ik if running
+                    if "stickFigure" in config.marvinShares.processDict.keys():
+                        if position != prevCurrentDict.position:
+                            config.marvinShares.ikUpdateQueue.put({'msgType': 'update'})
+                        #config.log(f"update sent to stickFigure")
 
                     # check for move target postition reached
                     if not moving and attached:
@@ -120,21 +128,42 @@ def readMessages(arduino):
 
 
                 if msgID == "!A0":  # "arduino ready"
+                    # lower arduino, index 0, COM7 should reply with !A0
+                    config.log(f"!A0 response from {arduinoIndex=}")
 
-                    #config.md.arduinoDict.get(arduino)['connected'] = True
-                    config.log(f"ready message from arduino {config.md.arduinoDict.get(arduino)['arduinoName']} received")
-                    updStmt = ("arduinoDict", arduino, {'connected':True})
+                    if arduinoIndex == 1:
+                        config.log(f"has lower arduino, arduinoIndex 0, COM7 a GND connection on Pin 50?")
+                        config.log(f"if so, w10 has a wrong device/COM-Port assignment")
+                        config.log(f"wrong arduino assignment, going down")
+                        os._exit(1)
+
+                    #config.share.arduinoDict.get(arduino)['connected'] = True
+                    config.log(f"ready message from arduino {config.arduinoDictLocal[arduinoIndex]['arduinoName']} received")
+                    config.arduinoDictLocal[arduinoIndex]['connected'] = True
+                    updStmt = (mg.SharedDataItem.ARDUINO, arduinoIndex, config.arduinoDictLocal[arduinoIndex])
                     config.updateSharedDict(updStmt)
 
-                    if config.md.isProcessRunning('skeletonGui'):
-                        info = {'type': 'arduinoUpdate', 'arduino': arduino, 'connected': True}
-                        config.log(f"update skeletonGui {info}")
-                        config.md.guiUpdateQueue.put(info)
+                elif msgID == "!A1":  # "arduino ready" from upper arduino
+                    # upper arduino, index 1, COM6 should reply with !A1
 
+                    config.log(f"!A1 response from {arduinoIndex=}")
+
+                    if arduinoIndex == 0:
+                        config.log(f"has lower arduino, arduinoIndex 0, COM7 a GND connection on Pin 50?")
+                        config.log(f"if so, w10 has a wrong device/COM-Port assignment")
+                        config.log(f"wrong arduino assignment, going down")
+                        os._exit(1)
+
+                    # config.share.arduinoDict.get(arduino)['connected'] = True
+                    config.log(
+                        f"ready message from arduino {config.arduinoDictLocal[arduinoIndex]['arduinoName']} received")
+                    config.arduinoDictLocal[arduinoIndex]['connected'] = True
+                    updStmt = (mg.SharedDataItem.ARDUINO, arduinoIndex, config.arduinoDictLocal[arduinoIndex])
+                    config.updateSharedDict(updStmt)
 
                 else:
                     try:
-                        config.log(f"<-I{arduino} " + recv[:-1], publish=False)
+                        config.log(f"<-I{arduinoIndex} " + recv[:-1], publish=False)
                     except:
                         config.log(f"Unexpected error on reading messages: {sys.exc_info()[0]}")
 

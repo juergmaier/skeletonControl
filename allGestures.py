@@ -1934,7 +1934,7 @@ torsoMoveDuration =  {'torso.topStom' : {'default': 800, 'current': 800},
                       'torso.lowStom' : {'default': 800, 'current': 800}}
 
 
-gestureDir = 'c:/projekte/inmoov/robotControl/marvinGestures'   # change this to marvinGestures once all gestures are verified
+gestureDir = 'd/projekte/inmoov/robotControl/marvinGestures'   # change this to marvinGestures once all gestures are verified
 
 
 def createAllGesturesModule():
