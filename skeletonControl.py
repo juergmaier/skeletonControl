@@ -8,13 +8,13 @@ import queue
 
 from marvinglobal import marvinglobal as mg
 from marvinglobal import marvinShares
-from marvinglobal import servoClasses
+from marvinglobal import skeletonClasses
 
 import config
 
 import arduinoSend
 import arduinoReceive
-import servoRequests
+import skeletonRequests
 
 
 def openSerial(arduinoIndex):
@@ -47,7 +47,7 @@ def openSerial(arduinoIndex):
                 conn.close()
             except Exception as e2:
                 config.log(f"conn.close failed, {e2}")
-        sys.exit(1)
+        sys.exit(5)
 
 
 
@@ -68,7 +68,7 @@ def assignServos(arduinoIndex):
 
             #config.log(f"servo assign {servoName}")
             arduinoSend.servoAssign(servoName, config.servoCurrentDictLocal.get(servoName).position)
-            time.sleep(0.2)
+            time.sleep(0.1)
 
 def saveServoPosition(servoName, position, maxDelay=10):
     '''
@@ -100,10 +100,10 @@ def initServoControl():
 
         except Exception as e:
             config.log(f"missing {mg.SERVO_TYPE_DEFINITIONS_FILE} file, try using the backup file")
-            os._exit(3)
+            os._exit(6)
 
         for servoTypeName, servoTypeData in servoTypeDefinitions.items():
-            servoType = servoClasses.ServoType(servoTypeData)   # inst of servoTypeData class
+            servoType = skeletonClasses.ServoType(servoTypeData)   # inst of servoTypeData class
             config.servoTypeDictLocal.update({servoTypeName: servoType})
 
             # add servoTypes to shared data
@@ -124,10 +124,10 @@ def initServoControl():
 
         except Exception as e:
             config.log(f"missing {mg.SERVO_STATIC_DEFINITIONS_FILE} file, try using the backup file")
-            os._exit(2)
+            os._exit(7)
 
         for servoName in servoStaticDefinitions:
-            servoStatic = servoClasses.ServoStatic(servoStaticDefinitions[servoName])
+            servoStatic = skeletonClasses.ServoStatic(servoStaticDefinitions[servoName])
             servoType = config.servoTypeDictLocal[servoStatic.servoType]
 
             # data cleansing
@@ -176,7 +176,7 @@ def initServoControl():
         # check for valid persisted position
         for servoName in config.servoStaticDictLocal:
 
-            servoStatic:servoClasses.ServoStatic = config.servoStaticDictLocal[servoName]
+            servoStatic:skeletonClasses.ServoStatic = config.servoStaticDictLocal[servoName]
 
             # try to assign the persisted last known servo position
             try:
@@ -192,7 +192,7 @@ def initServoControl():
                 p = servoStatic.maxPos
 
             # create ServoCurrent object
-            servoCurrent = servoClasses.ServoCurrent()
+            servoCurrent = skeletonClasses.ServoCurrent()
 
             servoCurrent.position = p
 
@@ -214,7 +214,7 @@ def initServoControl():
     config.log(f"create servoDerivedDict")
     for servoName, servoStatic in config.servoStaticDictLocal.items():
         servoType = config.servoTypeDictLocal[servoStatic.servoType]
-        servoDerived = servoClasses.ServoDerived(servoStatic, servoType)
+        servoDerived = skeletonClasses.ServoDerived(servoStatic, servoType)
         config.servoDerivedDictLocal.update({servoName: servoDerived})
 
 
@@ -224,13 +224,14 @@ def initServoControl():
     # create a dict to find servo name from arduino and pin (for messages from arduino)
     for servoName, servoStatic in config.servoStaticDictLocal.items():
         config.servoNameByArduinoAndPin.update({config.servoDerivedDictLocal[servoName].servoUniqueId: servoName})
+    config.log(f"lookup list for servo by arduino and pin created")
 
     # assign servos
-    for servoName, servoStatic in config.servoStaticDictLocal.items():
-        servoDerived:servoClasses.ServoDerived = config.servoDerivedDictLocal[servoName]
-        position = mg.evalPosFromDeg(servoStatic, servoDerived, servoStatic.restDeg)
-        arduinoSend.servoAssign(servoName, position)
-        time.sleep(0.2)
+    #for servoName, servoStatic in config.servoStaticDictLocal.items():
+    #    servoDerived:skeletonClasses.ServoDerived = config.servoDerivedDictLocal[servoName]
+    #    position = mg.evalPosFromDeg(servoStatic, servoDerived, servoStatic.restDeg)
+    #    arduinoSend.servoAssign(servoName, position)
+    #    time.sleep(0.1)
 
 
 def saveServoStaticDict():
@@ -245,6 +246,8 @@ def saveServoStaticDict():
 
     with open(mg.SERVO_STATIC_DEFINITIONS_FILE, 'w') as outfile:
         json.dump(servoStaticDefinitions, outfile, indent=2)
+
+    config.log(f"servoStaticDict saved")
 
 
 def createPersistedDefaultServoPositions():
@@ -278,7 +281,7 @@ def connectWithArduinos():
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
         if not openSerial(arduinoIndex):
             config.log(f"could not open serial port {arduinoIndex['comPort']}, going down")
-            os._exit(1)
+            os._exit(8)
 
     # start serial port receiving threads
     for arduinoIndex,arduinoData in config.arduinoDictLocal.items():
@@ -288,7 +291,7 @@ def connectWithArduinos():
         serialReadThread.start()
 
     # verify connection by requesting a first response from Arduino
-    time.sleep(0.8)
+    time.sleep(0.5)
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
         arduinoSend.requestArduinoReady(arduinoIndex)
 
@@ -302,11 +305,11 @@ def connectWithArduinos():
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
         if not arduinoData['connected']:
             config.log(f"could not receive serial response from arduino {arduinoData['arduinoName']}, {arduinoData['comPort']}")
-            os._exit(1)
+            os._exit(9)
 
 
     # allow arduinos to report their status
-    time.sleep(2)
+    time.sleep(0.2)
 
 
 if __name__ == "__main__":
@@ -316,7 +319,7 @@ if __name__ == "__main__":
     config.marvinShares = marvinShares.MarvinShares()
     if not config.marvinShares.sharedDataConnect(config.processName):
         config.log(f"could not connect with marvinData")
-        os._exit(1)
+        os._exit(10)
 
 
     # add own process to shared process list
@@ -326,12 +329,13 @@ if __name__ == "__main__":
 
     initServoControl()
 
+    # assign servos
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
         config.log(f"assign servos to arduino {arduinoIndex}, {arduinoData['arduinoName']=}, {arduinoData['comPort']=}")
         assignServos(arduinoIndex)
 
     # set verbose mode for servos to report more details
-    arduinoSend.setVerbose('rightHand.thumb', True)
+    #arduinoSend.setVerbose('head.jaw', True)
 
     # request all servos to rest position
     arduinoSend.requestAllServosRest()
@@ -342,27 +346,35 @@ if __name__ == "__main__":
     # wait for move requests or timeout
     while True:
 
+        config.moveRequestBuffer.checkForExecutableRequests()
+
         try:
             config.marvinShares.updateProcessDict(config.processName)
-            request = config.marvinShares.servoRequestQueue.get(block=True, timeout=1)
+            request = config.marvinShares.skeletonRequestQueue.get(block=True, timeout=1)
         except queue.Empty: # in case of empty queue update processDict only
             continue
         except TimeoutError: # in case of timeout update processDict only
             continue
         except Exception as e:
-            config.log(f"exception in waiting for skeleton gui update requests, {e=}, going down")
-            os._exit(1)
+            config.log(f"exception in waiting for skeleton request, {e=}, going down")
+            os._exit(11)
 
-        if 'servoName' in request.keys():
-            if request['servoName'] != 'head.jaw':
-                config.log(f"servoRequestQueue, request received: {request}")
+        #config.log(f"skeletonRequestQueue, request received: {request}")
 
-        # try to call the requested servo method
+        try:
+            if 'servoName' in request.keys():
+                # do not log head.jaw requests as they are very frequent
+                if request['servoName'] != 'head.jaw':
+                    config.log(f"skeletonRequestQueue, request received: {request}")
+        except Exception as e:
+            config.log(f"invalid request received: {request}")
+
+        # try to call the requested servo method in module skeletonRequests
         try:
             methodName = request['cmd']
-            getattr(servoRequests, methodName, lambda: 'unknown')(request)
+            getattr(skeletonRequests, methodName, lambda: 'unknown')(request)
 
         except Exception as e:
-            config.log(f"unknown command in request [{request['cmd']}]")
+            config.log(f"unknown command in request [{request}], {e}")
 
 

@@ -2,8 +2,21 @@
 import time
 import config
 
-from marvinglobal import servoClasses
+from marvinglobal import skeletonClasses
 from marvinglobal import marvinglobal as mg
+
+
+def addMoveToRequestList(servoName, arduino, msg):
+    """
+    for servo position requests marked as sequential buffer the requests
+    :param servoName:
+    :param arduino:
+    :param msg:
+    :return:
+    """
+    #config.servoRequestList.append({'servoName': servoName, 'arduino': arduino, 'msg': msg})
+    config.moveRequestBuffer.addMoveRequest({'servoName': servoName, 'arduino': arduino, 'msg': msg})
+
 
 def sendArduinoCommand(arduinoIndex, msg):
     if msg[-1] != "\n":
@@ -45,7 +58,7 @@ pin: {servoStatic.pin:2}, minPos: {servoStatic.minPos:3}, maxPos:{servoStatic.ma
 restDeg: {servoStatic.restDeg:3}, autoDetach: {servoStatic.autoDetach:4.0f}, inverted: {inverted}, lastPos: {lastPos:3}, powerPin: {servoStatic.powerPin}")
 
 
-def requestServoPosition(servoName, position, duration, filterSequence=True):
+def requestServoPosition(servoName, newPosition, duration, sequential=True):
     """
     move servo in <duration> seconds from current position to <position>
     filter fast passed in requests
@@ -53,57 +66,60 @@ def requestServoPosition(servoName, position, duration, filterSequence=True):
     # command 1,<arduino>,<servo>,<position>,<duration>
     # e.g. servo=eyeX, position=50, duration=2500: 2,3,50,2500
     servoStatic = config.servoStaticDictLocal.get(servoName)
+    if not servoStatic.enabled:
+        config.log(f"servoPos {newPosition} requested but {servoName} is disabled")
+        return
+
     servoDerived = config.servoDerivedDictLocal.get(servoName)
     servoCurrent = config.servoCurrentDictLocal.get(servoName)
 
-    # filter out jaw moves from log as they are very frequent
-    if servoName != "head.jaw":
-        servoStatic = config.servoStaticDictLocal.get(servoName)
-        servoDerived = config.servoDerivedDictLocal.get(servoName)
-        degrees = mg.evalDegFromPos(servoStatic, servoDerived, position)
-        config.log(f"arduino send {servoName}, arduino {servoStatic.arduinoIndex}, degrees: {degrees}, position: {position:.0f}, duration: {duration:.0f}", publish=False)
+    degrees = mg.evalDegFromPos(servoStatic, servoDerived, newPosition)
 
-    # if new position requests come in high sequence avoid responding to each one
-    # when filterSequence is active
-    if filterSequence and (time.time() - servoCurrent.timeOfLastMoveRequest) < 0.2:
-        config.log(f"move request ignored, time diff last request: {time.time() - servoCurrent.timeOfLastMoveRequest} s")
-        return
-    #else:
-        #config.log(f"time since last move request: {time.time() - servoCurrent.timeOfLastMoveRequest}")
+    # special case head.jaw, overwrite last move request as we can get lots of requests
+    if servoName == "head.jaw":
+        deltaPos = abs(config.lastRequestedJawPosition - newPosition)
+        minDuration = servoDerived.msPerPos * deltaPos
+        #config.log(f"jaw: {config.lastRequestedJawPosition}, {servoCurrent.position}, {sequential=}")
+        config.lastRequestedJawPosition = newPosition
+    else:
+        deltaPos = abs(servoCurrent.position - newPosition)
+        minDuration = servoDerived.msPerPos * deltaPos
+        config.log(f"request servo position for {servoName}, arduino {servoStatic.arduinoIndex}, degrees: {degrees}, position: {newPosition:.0f}, duration: {duration:.0f}", publish=False)
+
+    # verify duration
+    if duration < minDuration:
+        #config.log(f"{servoName}: duration increased, deltaPos: {deltaPos:.0f}, msPerPos: {servoDerived.msPerPos:.1f}, from: {duration:.0f} to: {minDuration:.0f}")
+        duration = minDuration
 
     servoCurrent.timeOfLastMoveRequest = time.time()
 
-    if not servoStatic.enabled:
-        config.log(f"servoPos {position} requested but servo is disabled in ServoDict.json")
-        return
+    msg = f"1,{servoStatic.pin:02.0f},{newPosition:03.0f},{duration:04.0f},\n"
 
-    # verify duration
-    #config.log(f"position: {position}, scurrpos: {config.servoCurrent[servoName].position}")
-    deltaPos = abs(config.servoCurrentDictLocal.get(servoName).position - position)
-    minDuration = servoDerived.msPerPos * deltaPos
-
-    # for filtered moves increase move duration based on servos properties
-    if duration < minDuration and filterSequence and servoName != 'head.jaw':
-        config.log(f"{servoName}: duration increased, deltaPos: {deltaPos:.0f}, msPerPos: {servoDerived.msPerPos:.1f}, from: {duration:.0f} to: {minDuration:.0f}")
-        duration = minDuration
+    # for normally sequential requests add the request to a list
+    if sequential:
+        # work on servo commands sequentially
+        addMoveToRequestList(servoName, servoStatic.arduinoIndex, msg)
+    else:
+        # if servo in move arduino will terminate current move and set new target
+        sendArduinoCommand(servoStatic.arduinoIndex, msg)
 
 
-    msg = f"1,{servoStatic.pin:02.0f},{position:03.0f},{duration:04.0f},\n"
-    sendArduinoCommand(servoStatic.arduinoIndex, msg)
 
-
-def requestServoDegrees(servoName, degrees, duration, filterSequence=False):
-    servoStatic: servoClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
+def requestServoDegrees(servoName, degrees, duration, sequential=True):
+    servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoDerived: skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
     position = mg.evalPosFromDeg(servoStatic, servoDerived, degrees)
-    requestServoPosition(servoName, position, duration, filterSequence)
+    config.log(f"request servo degrees for {servoName}, {degrees=}, {position=}, {duration=:.0f}", publish=False)
+    requestServoPosition(servoName, position, duration, sequential)
 
 
 def requestServoStop(servoName):
-    servoStatic: servoClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoCurrent: servoClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
+    servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoCurrent: skeletonClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
     msg = f"2,{servoStatic.pin}\n"
     sendArduinoCommand(servoStatic.arduinoIndex, msg)
+    config.moveRequestBuffer.removeServoFromRequestList(servoName)
+
     if servoCurrent.swiping:
         updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': False})
         config.updateSharedDict(updStmt)
@@ -111,11 +127,14 @@ def requestServoStop(servoName):
 
 def requestAllServosStop():
     config.log(f"all servos stop requested")
+    config.moveRequestBuffer.clearBuffer()
+    config.activeServos.clearServoActiveList()
     msg = f"3\n"
     for i in range(config.numArduinos):
         if config.arduinoConn[i] is not None:
             sendArduinoCommand(i, msg)
     time.sleep(1)   # allow some time to stop
+
 
 def requestServoStatus(servoName: str):
     servoStatic = config.servoStaticDictLocal.get(servoName)
@@ -145,8 +164,8 @@ def setVerbose(servoName: str, state: bool):
 
 
 def requestRest(servoName: str):
-    servoStatic: servoClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
+    servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoDerived: skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
     if servoStatic.enabled:
         pos = mg.evalPosFromDeg(servoStatic, servoDerived, servoStatic.restDeg)
         requestServoPosition(servoName, pos, 1500)

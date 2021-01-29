@@ -4,6 +4,7 @@ import time, datetime
 import logging
 
 from marvinglobal import marvinShares
+import moveRequestBuffer
 
 numArduinos = 2
 arduinoConn = [None] * numArduinos
@@ -24,6 +25,12 @@ servoNameByArduinoAndPin = {}   # a dictionary to access servos by Arduino and I
 
 lastPositionSaveTime:float = time.time()
 
+activeServos = moveRequestBuffer.ActiveServos()
+moveRequestBuffer = moveRequestBuffer.MoveRequestBuffer()
+
+
+# special case jaw servo, keep track of last requested position
+lastRequestedJawPosition = 80
 
 def startLogging():
     logging.basicConfig(

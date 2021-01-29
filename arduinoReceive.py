@@ -5,7 +5,7 @@ import time
 
 import config
 from marvinglobal import marvinglobal as mg
-from marvinglobal import servoClasses
+from marvinglobal import skeletonClasses
 
 import arduinoSend
 import skeletonControl
@@ -30,8 +30,8 @@ def readMessages(arduinoIndex):
             try:
                 bytesAvailable = conn.in_waiting
             except Exception as e:
-                config.log(f"exception in arduino: {arduinoIndex} in in_waiting {e}, shutting down ...")
-                os._exit(1)
+                config.log(f"exception in arduino: Is 6V power on?")
+                os._exit(2)
 
             #config.log(f"waiting for arduino message {arduino}, {bytesAvailable=}")
             if bytesAvailable == 0:
@@ -72,7 +72,7 @@ def readMessages(arduinoIndex):
 
                     prevCurrentDict = config.servoCurrentDictLocal.get(servoName)
                     servoStatic = config.servoStaticDictLocal.get(servoName)
-                    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
+                    servoDerived: skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
                     degrees = mg.evalDegFromPos(servoStatic, servoDerived, position)
 
                     newValues = {'assigned': assigned,
@@ -101,6 +101,8 @@ def readMessages(arduinoIndex):
 
                     # check for move target postition reached
                     if not moving and attached:
+
+                        config.activeServos.setServoInactive(servoName)
 
                         # handle special case in swipe mode
                         #config.log(f"{servoName}: not moving and attached, swiping: {prevCurrentDict.swiping}")
@@ -135,7 +137,7 @@ def readMessages(arduinoIndex):
                         config.log(f"has lower arduino, arduinoIndex 0, COM7 a GND connection on Pin 50?")
                         config.log(f"if so, w10 has a wrong device/COM-Port assignment")
                         config.log(f"wrong arduino assignment, going down")
-                        os._exit(1)
+                        os._exit(3)
 
                     #config.share.arduinoDict.get(arduino)['connected'] = True
                     config.log(f"ready message from arduino {config.arduinoDictLocal[arduinoIndex]['arduinoName']} received")
@@ -152,7 +154,7 @@ def readMessages(arduinoIndex):
                         config.log(f"has lower arduino, arduinoIndex 0, COM7 a GND connection on Pin 50?")
                         config.log(f"if so, w10 has a wrong device/COM-Port assignment")
                         config.log(f"wrong arduino assignment, going down")
-                        os._exit(1)
+                        os._exit(4)
 
                     # config.share.arduinoDict.get(arduino)['connected'] = True
                     config.log(

@@ -90,11 +90,11 @@ class Mouth:
         config.log(f"speak blocking: {text}")
         config.marvinShares.speechRequests.put(text)
         #config.log(f"wait for text spoken")
-        responseWaitStart = time.time()
-        while config.marvinShares.speechResponds.empty():
-            if time.time() - responseWaitStart > 3:
-                break
-            time.sleep(0.1)
+ #       responseWaitStart = time.time()
+ #       while config.marvinShares.speechResponds.empty():
+ #           if time.time() - responseWaitStart > 3:
+ #               break
+        time.sleep(len(text) * 0.02)
 
 mouth = Mouth()
 

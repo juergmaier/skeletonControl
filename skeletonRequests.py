@@ -2,7 +2,7 @@
 import config
 import arduinoSend
 from marvinglobal import marvinglobal as mg
-from marvinglobal import servoClasses
+from marvinglobal import skeletonClasses
 
 #    def assign(self, requestQueue, servoName, initialPosition):
 #        requestQueue.put({'cmd': 'assign', 'servoName': servoName, 'position': initialPosition})
@@ -14,15 +14,19 @@ def assign(request):
 def stop(request):
     arduinoSend.requestServoStop(request['servoName'])
 
-#    def positionServo(self, requestQueue, servoName, position, duration):
-#        requestQueue.put({'cmd': 'position', 'servoName': servoName, 'position': position, 'duration': duration})
+# move servo to position 0..180
 def position(request):
-    arduinoSend.requestServoPosition(request['servoName'], request['position'], request['duration'])
+    #config.log(f"{request=}")
+    arduinoSend.requestServoPosition(request['servoName'], request['position'], request['duration'],request['sequential'])
+
+# move servo to requested degrees
+def requestDegrees(request):
+    arduinoSend.requestServoDegrees(request['servoName'], request['degrees'], request['duration'], request['sequential'])
 
 #    def setVerbose(self, requestQueue, servoName, verbose):
 #        requestQueue.put({'cmd': 'setVerbose', 'servoName': servoName, 'verbose': verbose})
 def setVerbose(request):
-    arduinoSend.setVerbose(request['servoName'], request['verbose'])
+    arduinoSend.setVerbose(request['servoName'], request['verboseOn'])
 
 #    def allServoStop(self, requestQueue):
 #        requestQueue.put({'cmd': 'allServoStop'})
@@ -37,7 +41,7 @@ def allServoRest(request):
 #    def setAutoDetach(self, requestQueue, servoName, duration):
 #        requestQueue.put({'cmd': 'setAutoDetach', 'servoName': servoName, 'duration': duration})
 def setAutoDetach(request):
-    arduinoSend.setAutoDetach(request['servoName'], request['duration'])
+    arduinoSend.setAutoDetach(request['servoName'], request['duration']/1000)
 
 # random moves is a separate process
 #def startRandomMoves(request):
@@ -49,8 +53,8 @@ def setAutoDetach(request):
 def startSwipe(request):
     config.log(f"startSwipe requested")
     servoName = request['servoName']
-    servoStatic: servoClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoDerived: servoClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
+    servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoDerived: skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
 
     # request servoCurrent update with new swiping state
     updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': True})
