@@ -6,18 +6,6 @@ from marvinglobal import skeletonClasses
 from marvinglobal import marvinglobal as mg
 
 
-def addMoveToRequestList(servoName, arduino, msg):
-    """
-    for servo position requests marked as sequential buffer the requests
-    :param servoName:
-    :param arduino:
-    :param msg:
-    :return:
-    """
-    #config.servoRequestList.append({'servoName': servoName, 'arduino': arduino, 'msg': msg})
-    config.moveRequestBuffer.addMoveRequest({'servoName': servoName, 'arduino': arduino, 'msg': msg})
-
-
 def sendArduinoCommand(arduinoIndex, msg):
     if msg[-1] != "\n":
         msg += "\n"
@@ -26,6 +14,8 @@ def sendArduinoCommand(arduinoIndex, msg):
         #config.log(f"send msg to arduino {arduinoIndex}, {msg}")
         conn.write(bytes(msg, 'ascii'))
         conn.flush()
+        # do not overload the arduino with too many requests
+        time.sleep(0.05)
     else:
         config.log(f"no connection with arduino {arduinoIndex}")
 
@@ -42,7 +32,6 @@ def servoAssign(servoName, lastPos):
 
     servoStatic = config.servoStaticDictLocal.get(servoName)
     servoType = config.servoTypeDictLocal.get(servoStatic.servoType)
-    servoDerived = config.servoDerivedDictLocal.get(servoName)
 
     # send servo definitions to the arduino's
     # both servo and servoType have an inverted flag. for our servo inversion is given if either of them
@@ -52,8 +41,8 @@ def servoAssign(servoName, lastPos):
     msg = f"0,{servoName},{servoStatic.pin},{servoStatic.minPos},{servoStatic.maxPos},{servoStatic.autoDetach:.1f},{inverted},{lastPos},{servoStatic.powerPin},\n"
 
     sendArduinoCommand(servoStatic.arduinoIndex, msg)
-    if config.servoCurrentDictLocal.get(servoName).verbose:
-        config.log(f"assign servo: {servoName:<20}, \
+
+    config.log(f"assign servo: {servoName:<20}, \
 pin: {servoStatic.pin:2}, minPos: {servoStatic.minPos:3}, maxPos:{servoStatic.maxPos:3}, \
 restDeg: {servoStatic.restDeg:3}, autoDetach: {servoStatic.autoDetach:4.0f}, inverted: {inverted}, lastPos: {lastPos:3}, powerPin: {servoStatic.powerPin}")
 
@@ -95,10 +84,12 @@ def requestServoPosition(servoName, newPosition, duration, sequential=True):
 
     msg = f"1,{servoStatic.pin:02.0f},{newPosition:03.0f},{duration:04.0f},\n"
 
-    # for normally sequential requests add the request to a list
+    # for sequential requests add the request to a list and run moves for a single servo in sequence
     if sequential:
-        # work on servo commands sequentially
-        addMoveToRequestList(servoName, servoStatic.arduinoIndex, msg)
+        config.moveRequestBuffer.addMoveRequest(
+            {'servoName': servoName,
+             'arduino': servoStatic.arduinoIndex,
+             'msg': msg})
     else:
         # if servo in move arduino will terminate current move and set new target
         sendArduinoCommand(servoStatic.arduinoIndex, msg)
@@ -115,20 +106,24 @@ def requestServoDegrees(servoName, degrees, duration, sequential=True):
 
 def requestServoStop(servoName):
     servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoCurrent: skeletonClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
-    msg = f"2,{servoStatic.pin}\n"
-    sendArduinoCommand(servoStatic.arduinoIndex, msg)
+    servoCurrentLocal: skeletonClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
+
+    # clear all buffered requests for the servo
     config.moveRequestBuffer.removeServoFromRequestList(servoName)
 
-    if servoCurrent.swiping:
-        updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': False})
-        config.updateSharedDict(updStmt)
+    # send stop request to arduino
+    msg = f"2,{servoStatic.pin}\n"
+    sendArduinoCommand(servoStatic.arduinoIndex, msg)
+
+    if servoCurrentLocal.swiping:
+        servoCurrentLocal.swiping = False
+        config.updateSharedServoCurrent(servoName, servoCurrentLocal)
 
 
 def requestAllServosStop():
     config.log(f"all servos stop requested")
     config.moveRequestBuffer.clearBuffer()
-    config.activeServos.clearServoActiveList()
+    config.moveRequestBuffer.clearServoActiveList()
     msg = f"3\n"
     for i in range(config.numArduinos):
         if config.arduinoConn[i] is not None:

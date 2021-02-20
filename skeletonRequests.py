@@ -1,4 +1,5 @@
 
+import copy
 import config
 import arduinoSend
 from marvinglobal import marvinglobal as mg
@@ -8,6 +9,19 @@ from marvinglobal import skeletonClasses
 #        requestQueue.put({'cmd': 'assign', 'servoName': servoName, 'position': initialPosition})
 def assign(request):
     arduinoSend.servoAssign(request['servoName'], request['position'])
+
+def reassign(msg):
+    # when servo definitions are changed through the gui the local
+    # dict needs to use the new shared dict values
+    servoName = msg['info']['servoName']
+    sharedServoStatic = config.marvinShares.servoStaticDict.get(servoName)
+    config.servoStaticDictLocal[servoName] = copy.deepcopy(sharedServoStatic)
+
+    sharedServoDerived = config.marvinShares.servoDerivedDict.get(servoName)
+    config.servoDerivedDictLocal[servoName] = copy.deepcopy(sharedServoDerived)
+
+    currentPos = config.servoCurrentDictLocal.get(servoName).position
+    arduinoSend.servoAssign(servoName, currentPos)
 
 #    def stop(self, requestQueue, servoName):
 #        requestQueue.put({'cmd': 'stop', 'servoName': servoName})
@@ -47,18 +61,31 @@ def setAutoDetach(request):
 #def startRandomMoves(request):
 #    config.log(f"tbd: startRandomMoves requested")
 
-#def stopRandomMoves(request):
-#    config.log(f"tbd: stopRandomMoves requested")
+def stopRandomMoves(request):
+    # remove process from running process list
+    config.marvinShares.removeProcess('randomMoves')
+
+def stopGesture(request):
+    # remove process from running process list
+    config.marvinShares.removeProcess('playGesture')
+
 
 def startSwipe(request):
     config.log(f"startSwipe requested")
     servoName = request['servoName']
-    servoStatic: skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
-    servoDerived: skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
-
+    servoStatic:skeletonClasses.ServoStatic = config.servoStaticDictLocal.get(servoName)
+    servoDerived:skeletonClasses.ServoDerived = config.servoDerivedDictLocal.get(servoName)
+    servoCurrentLocal:skeletonClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
+    servoCurrentLocal.swiping = True
+    config.updateSharedServoCurrent(servoName, servoCurrentLocal)
     # request servoCurrent update with new swiping state
-    updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': True})
-    config.updateSharedDict(updStmt)
+    #updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': True})
+    #msg = {'cmd': mg.SharedDataItem.SERVO_CURRENT, 'sender': config.processName,
+    #       'info': {'servoName': servoName, 'swiping': True}}
+    #config.updateSharedDict(msg)
+    # this updates the shared currentDict, as the skeletonControl never pulls current data
+    # back from the share update the local copy too
+    #servoCurrent.swiping = True
 
     minPos = servoStatic.minPos
     moveDuration = servoDerived.msPerPos * servoDerived.posRange
@@ -71,8 +98,12 @@ def startSwipe(request):
 def stopSwipe(request):
     config.log(f"stopSwipe requested")
     servoName = request['servoName']
-    updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, {'swiping': False})
-    config.updateSharedDict(updStmt)
+    servoCurrentLocal:skeletonClasses.ServoCurrent = config.servoCurrentDictLocal.get(servoName)
+    servoCurrentLocal.swiping = False
+    config.updateSharedServoCurrent(servoName, servoCurrentLocal)
+    #msg = {'cmd': mg.SharedDataItem.SERVO_CURRENT, 'sender': config.processName,
+    #       'info': {'servoName': servoName, 'data': servoCurrentLocal.__dict__}}
+    #config.updateSharedDict(msg)
     arduinoSend.requestRest(servoName)
 
 # test git 2

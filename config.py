@@ -3,6 +3,7 @@ import os
 import time, datetime
 import logging
 
+from marvinglobal import marvinglobal as mg
 from marvinglobal import marvinShares
 import moveRequestBuffer
 
@@ -19,13 +20,12 @@ servoTypeDictLocal = {}
 servoStaticDictLocal = {}
 servoDerivedDictLocal = {}
 servoCurrentDictLocal = {}
+
 persistedServoPositionsLocal = {}
+servoPositionsChanged = False
 
 servoNameByArduinoAndPin = {}   # a dictionary to access servos by Arduino and Id
 
-lastPositionSaveTime:float = time.time()
-
-activeServos = moveRequestBuffer.ActiveServos()
 moveRequestBuffer = moveRequestBuffer.MoveRequestBuffer()
 
 
@@ -47,9 +47,14 @@ def log(msg, publish=True):
     print(f"{logtime} - {msg}")
 
 
-def updateSharedDict(updStmt):
+def updateSharedDict(msg):
+    log(f"udpateSharedDict, {msg=}")
+    if not marvinShares.updateSharedData(msg):
 
-    if not marvinShares.updateSharedData(updStmt):
-
-        log(f"connection with shared data lost, going down")# connection to marvinData lost, try to reconnect
+        log(f"connection with shared data lost, going down") # connection to marvinData lost, try to reconnect
         os._exit(1)
+
+def updateSharedServoCurrent(servoName, servoCurrentLocal):
+    msg = {'cmd': mg.SharedDataItem.SERVO_CURRENT, 'sender':processName,
+           'info': {'servoName': servoName, 'data': dict(servoCurrentLocal.__dict__)}}
+    updateSharedDict(msg)

@@ -66,9 +66,16 @@ def assignServos(arduinoIndex):
 
         if servoStatic.enabled and servoStatic.arduinoIndex == arduinoIndex:
 
-            #config.log(f"servo assign {servoName}")
+            config.log(f"servo assign {servoName}, last persisted position: {config.servoCurrentDictLocal.get(servoName).position}")
             arduinoSend.servoAssign(servoName, config.servoCurrentDictLocal.get(servoName).position)
-            time.sleep(0.1)
+            time.sleep(0.2)     # add delay as arduino gets overwhelmed otherwise
+
+    # then move the servos to the last persisted position
+    for servoName, servoStatic in config.servoStaticDictLocal.items():
+
+        if servoStatic.enabled and servoStatic.arduinoIndex == arduinoIndex:
+            arduinoSend.requestServoPosition(servoName, config.servoCurrentDictLocal.get(servoName).position, 1000)
+
 
 def saveServoPosition(servoName, position, maxDelay=10):
     '''
@@ -76,13 +83,11 @@ def saveServoPosition(servoName, position, maxDelay=10):
     more than maxDelay seconds
     '''
     config.persistedServoPositionsLocal[servoName] = position
-    if time.time() - config.lastPositionSaveTime > maxDelay:
-        persistServoPositions()
+    config.servoPositionsChanged = True
 
 
 def persistServoPositions():
 
-    config.lastPositionSaveTime = time.time()
     with open(mg.PERSISTED_SERVO_POSITIONS_FILE, 'w') as outfile:
         json.dump(config.persistedServoPositionsLocal, outfile, indent=2)
 
@@ -107,8 +112,10 @@ def initServoControl():
             config.servoTypeDictLocal.update({servoTypeName: servoType})
 
             # add servoTypes to shared data
-            updStmt = (mg.SharedDataItem.SERVO_TYPE, servoTypeName, dict(servoType.__dict__))
-            config.updateSharedDict(updStmt)
+            #updStmt = (mg.SharedDataItem.SERVO_TYPE, servoTypeName, dict(servoType.__dict__))
+            msg = {'cmd': mg.SharedDataItem.SERVO_TYPE, 'sender': config.processName,
+                   'info': {'type': servoTypeName, 'data': dict(servoType.__dict__)}}
+            config.updateSharedDict(msg)
 
         config.log(f"servoTypeDict loaded")
 
@@ -154,9 +161,15 @@ def initServoControl():
             # add object to the servoStaticDict
             config.servoStaticDictLocal.update({servoName: servoStatic})
 
-            # add servoTypes to shared data
-            updStmt = (mg.SharedDataItem.SERVO_STATIC, servoName, dict(servoStatic.__dict__))
-            config.updateSharedDict(updStmt)
+            # populate the shared version of the dict
+            #updStmt = (mg.SharedDataItem.SERVO_STATIC, servoName, dict(servoStatic.__dict__))
+            msg = {'cmd': mg.SharedDataItem.SERVO_STATIC, 'sender': config.processName,
+                   'info': {'servoName': servoName, 'data': dict(servoStatic.__dict__)}}
+            config.marvinShares.updateSharedData(msg)
+
+            #config.updateSharedDict(updStmt)
+
+        config.log(f"shared servo data updated")
 
 
     def loadServoPositions():
@@ -203,8 +216,11 @@ def initServoControl():
             config.servoCurrentDictLocal.update({servoName: servoCurrent})
 
             # add servoCurrent to shared data
-            updStmt = (mg.SharedDataItem.SERVO_CURRENT, servoName, dict(servoCurrent.__dict__))
-            config.updateSharedDict(updStmt)
+            servoCurrentLocal = config.servoCurrentDictLocal[servoName]
+            config.updateSharedServoCurrent(servoName, servoCurrentLocal)
+            #msg = {'cmd': mg.SharedDataItem.SERVO_CURRENT, 'sender': config.processName,
+            #       'info': {'servoName': servoName, 'data': dict(servoCurrent.__dict__)}}
+            #config.updateSharedDict(msg)
 
         config.log("servoPositions loaded")
 
@@ -255,10 +271,12 @@ def createPersistedDefaultServoPositions():
     initialize default servo positions in case of missing or differing json file
     :return:
     '''
-
     config.persistedServoPositionsLocal = {}
     for servoName in config.servoStaticDictLocal:
-        config.persistedServoPositionsLocal.update({servoName: 90})
+        servoStatic = config.servoStaticDictLocal.get(servoName)
+        servoDerived = config.servoDerivedDictLocal.get(servoName)
+        restPos = mg.evalPosFromDeg(servoStatic, servoDerived, servoStatic.restDeg)
+        config.persistedServoPositionsLocal.update({servoName: restPos})
     persistServoPositions()
 
 
@@ -274,8 +292,10 @@ def connectWithArduinos():
 
     # update the shared copy to be available for other interested processes
     for arduinoIndex, arduinoDict in config.arduinoDictLocal.items():
-        updStmt = (mg.SharedDataItem.ARDUINO, arduinoIndex, arduinoDict)
-        config.updateSharedDict(updStmt)
+        #updStmt = (mg.SharedDataItem.ARDUINO, arduinoIndex, arduinoDict)
+        msg = {'cmd': mg.SharedDataItem.ARDUINO, 'sender': config.processName,
+               'info': {'arduinoIndex': arduinoIndex, 'data': config.arduinoDictLocal[arduinoIndex]}}
+        config.updateSharedDict(msg)
 
     # try to open comm ports
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
@@ -329,16 +349,14 @@ if __name__ == "__main__":
 
     initServoControl()
 
-    # assign servos
+    # assign servos and move servos to last known persisted position
     for arduinoIndex, arduinoData in config.arduinoDictLocal.items():
         config.log(f"assign servos to arduino {arduinoIndex}, {arduinoData['arduinoName']=}, {arduinoData['comPort']=}")
         assignServos(arduinoIndex)
 
-    # set verbose mode for servos to report more details
-    #arduinoSend.setVerbose('head.jaw', True)
 
-    # request all servos to rest position
-    arduinoSend.requestAllServosRest()
+    # set verbose mode for servos to report more details
+    arduinoSend.setVerbose('rightArm.bicep', True)
 
     config.log(f"skeletonControl ready, waiting for skeleton requests")
     config.log(f"---------------")
@@ -346,6 +364,11 @@ if __name__ == "__main__":
     # wait for move requests or timeout
     while True:
 
+        if config.servoPositionsChanged:
+            persistServoPositions()
+            config.servoPositionsChanged = False
+
+        # check for bufferend servo move requests
         config.moveRequestBuffer.checkForExecutableRequests()
 
         try:
@@ -357,6 +380,7 @@ if __name__ == "__main__":
             continue
         except Exception as e:
             config.log(f"exception in waiting for skeleton request, {e=}, going down")
+            config.marvinShares.removeProcess(config.processName)
             os._exit(11)
 
         #config.log(f"skeletonRequestQueue, request received: {request}")
@@ -369,12 +393,12 @@ if __name__ == "__main__":
         except Exception as e:
             config.log(f"invalid request received: {request}")
 
-        # try to call the requested servo method in module skeletonRequests
+        # try to call the servo method in module skeletonRequests
         try:
             methodName = request['cmd']
-            getattr(skeletonRequests, methodName, lambda: 'unknown')(request)
+            getattr(skeletonRequests, methodName, lambda: 'unknown')(request)   #skeletonRequests.cmd
 
         except Exception as e:
-            config.log(f"unknown command in request [{request}], {e}")
+            config.log(f"unknown command or failure in function, request [{request}], {e}")
 
 
